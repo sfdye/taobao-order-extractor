@@ -1,10 +1,15 @@
 // ==UserScript==
 // @name         淘宝订单提取器
+// @name:en      Taobao Order Extractor
 // @namespace    https://github.com/sfdye/taobao-order-extractor
 // @version      1.3
-// @description  提取最近一周淘宝订单信息，格式化为TSV方便粘贴到腾讯文档
+// @description  提取最近一周淘宝订单信息（商品名、价格、快递单号），格式化为TSV方便粘贴到腾讯文档/Excel
+// @description:en  Extract recent Taobao orders (item name, price, tracking number) as TSV for spreadsheet paste
 // @author       sfdye
+// @license      MIT
 // @match        *://buyertrade.taobao.com/trade/itemlist/*
+// @match        *://trade.taobao.com/trade/itemlist/*
+// @match        *://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm*
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
 // @connect      h5api.m.taobao.com
