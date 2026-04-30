@@ -25,7 +25,7 @@
   function simplifyItemName(name) {
     let s = name;
     s = s.replace(/[【\[（(][^】\]）)]*[】\]）)]\s*/g, '');
-    s = s.replace(/正品/g, '');
+    s = s.replace(/正品|包邮|优惠价|新款|爆款|热卖|特价|促销/g, '');
     s = s.trim();
     if (s.length <= 20) return s;
     const spaceIdx = s.indexOf(' ', 10);
