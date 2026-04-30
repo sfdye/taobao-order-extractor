@@ -392,6 +392,7 @@
         priceContainer = priceContainer.parentElement;
       }
 
+      if (price && parseFloat(price) === 0) continue;
       orderMap[orderId].items.push({ name: titleText, price });
     }
 
