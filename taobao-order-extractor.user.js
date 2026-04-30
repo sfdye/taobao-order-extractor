@@ -339,6 +339,10 @@
       const titleText = a.textContent.replace(/\[交易快照\]/g, '').trim();
       if (!titleText || titleText.length < 4) continue;
 
+      const href = a.getAttribute('href') || '';
+      const itemIdMatch = href.match(/[?&]id=(\d+)/);
+      const itemId = itemIdMatch ? itemIdMatch[1] : '';
+
       let container = a.parentElement;
       for (let i = 0; i < 10; i++) {
         if (!container || !container.parentElement) break;
@@ -356,6 +360,21 @@
       if (!orderIdMatch) continue;
       const orderId = orderIdMatch[1];
 
+      if (!orderMap[orderId]) {
+        const paidMatch = text.match(/实付款￥?([\d.]+)/);
+        orderMap[orderId] = {
+          orderId,
+          date: dateMatch[1],
+          items: [],
+          paid: paidMatch ? '￥' + paidMatch[1] : '',
+          _seenItemIds: new Set(),
+        };
+      }
+
+      const key = itemId || titleText;
+      if (orderMap[orderId]._seenItemIds.has(key)) continue;
+      orderMap[orderId]._seenItemIds.add(key);
+
       let price = '';
       let priceContainer = a.parentElement;
       for (let i = 0; i < 5; i++) {
@@ -369,19 +388,12 @@
         priceContainer = priceContainer.parentElement;
       }
 
-      if (!orderMap[orderId]) {
-        const paidMatch = text.match(/实付款￥?([\d.]+)/);
-        orderMap[orderId] = {
-          orderId,
-          date: dateMatch[1],
-          items: [],
-          paid: paidMatch ? '￥' + paidMatch[1] : '',
-        };
-      }
       orderMap[orderId].items.push({ name: titleText, price });
     }
 
-    return Object.values(orderMap);
+    const results = Object.values(orderMap);
+    results.forEach(o => delete o._seenItemIds);
+    return results;
   }
 
   // --- Old version parser (table-based) ---
