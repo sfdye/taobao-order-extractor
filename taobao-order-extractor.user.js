@@ -342,8 +342,8 @@
       if (!titleText || titleText.length < 4) continue;
 
       const href = a.getAttribute('href') || '';
-      const itemIdMatch = href.match(/[?&]id=(\d+)/);
-      const itemId = itemIdMatch ? itemIdMatch[1] : '';
+      const miIdMatch = href.match(/mi_id=([^&]+)/);
+      const miId = miIdMatch ? miIdMatch[1] : '';
 
       let container = a.parentElement;
       for (let i = 0; i < 10; i++) {
@@ -373,7 +373,7 @@
         };
       }
 
-      const key = itemId || titleText;
+      const key = miId || (href + titleText);
       if (orderMap[orderId]._seenItemIds.has(key)) continue;
       orderMap[orderId]._seenItemIds.add(key);
 
