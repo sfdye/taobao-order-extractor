@@ -336,7 +336,9 @@
     const orderMap = {};
 
     for (const a of itemLinks) {
-      const titleText = a.textContent.replace(/\[交易快照\]/g, '').trim();
+      const rawText = a.textContent;
+      if (!rawText.includes('[交易快照]')) continue;
+      const titleText = rawText.replace(/\[交易快照\]/g, '').trim();
       if (!titleText || titleText.length < 4) continue;
 
       const href = a.getAttribute('href') || '';
