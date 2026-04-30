@@ -495,13 +495,11 @@
           rows.push([seq, name, price, entries[i].company, entries[i].trackingNo].join('\t'));
         }
       } else {
-        const company = entries.map(e => e.company).join(' / ');
-        const trackingNo = entries.map(e => e.trackingNo).join(' / ');
-        for (const item of items) {
+        for (const entry of entries) {
           seq++;
-          const name = simplifyItemName(item.name);
-          const price = item.price || order.paid.replace(/[￥¥]/g, '');
-          rows.push([seq, name, price, company, trackingNo].join('\t'));
+          const name = items.map(it => simplifyItemName(it.name)).join(' + ');
+          const price = order.paid.replace(/[￥¥]/g, '');
+          rows.push([seq, name, price, entry.company, entry.trackingNo].join('\t'));
         }
       }
     }
