@@ -362,6 +362,8 @@
       if (!orderIdMatch) continue;
       const orderId = orderIdMatch[1];
 
+      if (text.includes('官方直邮') || text.includes('海外运费')) continue;
+
       if (!orderMap[orderId]) {
         const paidMatch = text.match(/实付款￥?([\d.]+)/);
         orderMap[orderId] = {
