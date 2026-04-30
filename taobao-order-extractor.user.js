@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         淘宝订单提取器
-// @namespace    https://github.com/lwan/taobao-order-extractor
+// @namespace    https://github.com/sfdye/taobao-order-extractor
 // @version      1.1
 // @description  提取最近一周淘宝订单信息，格式化为TSV方便粘贴到腾讯文档
-// @author       lwan
+// @author       sfdye
 // @match        *://buyertrade.taobao.com/trade/itemlist/*
 // @grant        GM_setClipboard
 // ==/UserScript==
