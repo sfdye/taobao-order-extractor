@@ -44,11 +44,12 @@ The extracted data is copied as TSV with these columns:
 
 | 序号 | 商品名称 | 实付款 | 快递公司 | 快递单号 |
 |------|----------|--------|----------|----------|
-| 1 | 瑜伽垫平板支撑核心训练 | 52.58 | 中通快递 | 78993339108762 |
-| 2 | 瑜伽砖女高密度成人舞蹈练功砖 | 35.42 | 顺丰速运 | SF0229051657614 |
+| 1 | Item A | 52.00 | ZTO Express | 7899000001 |
+| 2 | Item B | 35.00 | SF Express | SF0000000001 |
+| 3 | Item C + Item D | 88.00 | YTO Express | YT0000000001 |
 
-- Multi-package orders: each item gets its own row with its own tracking number
-- Multi-item single-package orders: combined into one row with names joined by " + "
+- Multi-package orders: each item gets its own row with its own tracking number (rows 1-2)
+- Multi-item single-package orders: combined into one row with names joined by " + " (row 3)
 
 ## License
 
