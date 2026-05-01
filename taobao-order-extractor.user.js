@@ -2,9 +2,9 @@
 // @name         淘宝订单提取器
 // @name:en      Taobao Order Extractor
 // @namespace    https://github.com/sfdye/taobao-order-extractor
-// @version      1.3
-// @description  提取最近一周淘宝订单信息（商品名、价格、快递单号），格式化为TSV方便粘贴到腾讯文档/Excel
-// @description:en  Extract recent Taobao orders (item name, price, tracking number) as TSV for spreadsheet paste
+// @version      1.4
+// @description  提取最近淘宝订单信息（支持自定义时间范围：1周/2周/1月），格式化为TSV方便粘贴到腾讯文档/Excel
+// @description:en  Extract recent Taobao orders (customizable range: 1wk/2wk/1mo) as TSV for spreadsheet paste
 // @author       sfdye
 // @license      MIT
 // @match        *://buyertrade.taobao.com/trade/itemlist/*
@@ -12,13 +12,20 @@
 // @match        *://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm*
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
+// @grant        GM_getValue
+// @grant        GM_setValue
 // @connect      h5api.m.taobao.com
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  const DAYS_TO_LOOK_BACK = 7;
+  const RANGE_OPTIONS = [
+    { days: 7,  label: '最近 1 周', btnText: '📋 提取本周订单' },
+    { days: 14, label: '最近 2 周', btnText: '📋 提取近2周订单' },
+    { days: 30, label: '最近 1 月', btnText: '📋 提取近1月订单' },
+  ];
+  let daysToLookBack = (typeof GM_getValue === 'function') ? GM_getValue('daysToLookBack', 7) : 7;
 
   function formatLocalDate(d) {
     const y = d.getFullYear();
@@ -40,7 +47,7 @@
 
   function getCutoffStr() {
     const now = new Date();
-    return formatLocalDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - DAYS_TO_LOOK_BACK));
+    return formatLocalDate(new Date(now.getFullYear(), now.getMonth(), now.getDate() - daysToLookBack));
   }
 
   function isNewVersion() {
@@ -48,29 +55,111 @@
   }
 
   function createButton() {
-    const btn = document.createElement('div');
-    btn.id = 'taobao-order-extractor-btn';
-    btn.innerHTML = '📋 提取本周订单';
-    Object.assign(btn.style, {
+    const container = document.createElement('div');
+    container.id = 'taobao-order-extractor-btn';
+    Object.assign(container.style, {
       position: 'fixed',
       bottom: '80px',
       right: '30px',
       zIndex: '99999',
-      padding: '12px 20px',
-      background: '#ff5000',
-      color: '#fff',
+      display: 'flex',
       borderRadius: '8px',
-      cursor: 'pointer',
-      fontSize: '14px',
-      fontWeight: 'bold',
+      overflow: 'visible',
       boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
       userSelect: 'none',
     });
-    btn.addEventListener('click', extractOrders);
-    btn.addEventListener('mouseenter', () => { btn.style.background = '#e04800'; });
-    btn.addEventListener('mouseleave', () => { btn.style.background = '#ff5000'; });
-    document.body.appendChild(btn);
-    return btn;
+
+    const chevron = document.createElement('div');
+    chevron.innerHTML = '▼';
+    Object.assign(chevron.style, {
+      padding: '12px 10px',
+      background: '#e04800',
+      color: '#fff',
+      cursor: 'pointer',
+      fontSize: '10px',
+      display: 'flex',
+      alignItems: 'center',
+      borderRadius: '0 8px 8px 0',
+      borderLeft: '1px solid rgba(255,255,255,0.3)',
+    });
+
+    const currentOption = RANGE_OPTIONS.find(o => o.days === daysToLookBack) || RANGE_OPTIONS[0];
+    const mainBtn = document.createElement('div');
+    mainBtn.id = 'taobao-order-extractor-main';
+    mainBtn.innerHTML = currentOption.btnText;
+    Object.assign(mainBtn.style, {
+      padding: '12px 20px',
+      background: '#ff5000',
+      color: '#fff',
+      cursor: 'pointer',
+      fontSize: '14px',
+      fontWeight: 'bold',
+      borderRadius: '8px 0 0 8px',
+    });
+
+    const dropdown = document.createElement('div');
+    Object.assign(dropdown.style, {
+      position: 'absolute',
+      bottom: '100%',
+      right: '0',
+      marginBottom: '4px',
+      background: '#fff',
+      borderRadius: '6px',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.2)',
+      overflow: 'hidden',
+      display: 'none',
+      minWidth: '120px',
+      zIndex: '999999',
+    });
+
+    function renderDropdown() {
+      dropdown.innerHTML = '';
+      for (const option of RANGE_OPTIONS) {
+        const item = document.createElement('div');
+        item.textContent = option.label;
+        Object.assign(item.style, {
+          padding: '10px 16px',
+          cursor: 'pointer',
+          fontSize: '13px',
+          color: option.days === daysToLookBack ? '#ff5000' : '#333',
+          fontWeight: option.days === daysToLookBack ? 'bold' : 'normal',
+          background: option.days === daysToLookBack ? '#fff5f0' : '#fff',
+          whiteSpace: 'nowrap',
+        });
+        item.addEventListener('mouseenter', () => { item.style.background = '#fff5f0'; });
+        item.addEventListener('mouseleave', () => {
+          item.style.background = option.days === daysToLookBack ? '#fff5f0' : '#fff';
+        });
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          daysToLookBack = option.days;
+          if (typeof GM_setValue === 'function') GM_setValue('daysToLookBack', option.days);
+          mainBtn.innerHTML = option.btnText;
+          dropdown.style.display = 'none';
+          renderDropdown();
+        });
+        dropdown.appendChild(item);
+      }
+    }
+    renderDropdown();
+
+    chevron.addEventListener('click', (e) => {
+      e.stopPropagation();
+      dropdown.style.display = dropdown.style.display === 'none' ? 'block' : 'none';
+    });
+    document.addEventListener('click', () => { dropdown.style.display = 'none'; });
+
+    mainBtn.addEventListener('click', extractOrders);
+    mainBtn.addEventListener('mouseenter', () => { mainBtn.style.background = '#e04800'; });
+    mainBtn.addEventListener('mouseleave', () => { mainBtn.style.background = '#ff5000'; });
+    chevron.addEventListener('mouseenter', () => { chevron.style.background = '#c03800'; });
+    chevron.addEventListener('mouseleave', () => { chevron.style.background = '#e04800'; });
+
+    container.appendChild(mainBtn);
+    container.appendChild(chevron);
+    container.appendChild(dropdown);
+    document.body.appendChild(container);
+    return container;
   }
 
   function showToast(message, duration = 3000) {
@@ -315,6 +404,9 @@
 
       const orderId = container.id.replace('shopOrderContainer_', '');
 
+      const containerText = container.textContent;
+      if (containerText.includes('官方直邮') || containerText.includes('海外运费')) continue;
+
       const titleEls = container.querySelectorAll('a[class*="title--"] [class*="titleText"]');
       const items = [];
       for (const t of titleEls) {
@@ -426,6 +518,9 @@
       const orderId = orderIdMatch ? orderIdMatch[1] : '';
       if (!orderId) continue;
 
+      const tableText = table.textContent;
+      if (tableText.includes('官方直邮') || tableText.includes('海外运费')) continue;
+
       const rows = table.querySelectorAll('tr');
       const items = [];
       let paid = '';
@@ -484,7 +579,7 @@
   function formatTSV(orders, logisticsMap) {
     const today = new Date();
     const startDate = new Date(today);
-    startDate.setDate(startDate.getDate() - DAYS_TO_LOOK_BACK);
+    startDate.setDate(startDate.getDate() - daysToLookBack);
     const header = `淘宝订单汇总 (${formatLocalDate(startDate)} ~ ${formatLocalDate(today)})`;
     const colHeader = ['序号', '商品名称', '实付款', '快递公司', '快递单号'].join('\t');
 
@@ -516,16 +611,17 @@
   }
 
   async function extractOrders() {
-    const btn = document.getElementById('taobao-order-extractor-btn');
-    if (btn) {
-      btn.innerHTML = '⏳ 提取中...';
-      btn.style.pointerEvents = 'none';
+    const mainBtn = document.getElementById('taobao-order-extractor-main');
+    if (mainBtn) {
+      mainBtn.innerHTML = '⏳ 提取中...';
+      mainBtn.style.pointerEvents = 'none';
     }
 
     try {
       const orders = parseOrdersFromDOM();
       if (orders.length === 0) {
-        showToast('未找到最近7天的订单');
+        const rangeLabel = (RANGE_OPTIONS.find(o => o.days === daysToLookBack) || {}).label || `最近${daysToLookBack}天`;
+        showToast(`未找到${rangeLabel}的订单`);
         return;
       }
 
@@ -554,9 +650,10 @@
       console.error('[订单提取] 错误:', e);
       showToast('❌ 提取失败，请查看控制台');
     } finally {
-      if (btn) {
-        btn.innerHTML = '📋 提取本周订单';
-        btn.style.pointerEvents = 'auto';
+      if (mainBtn) {
+        const currentOption = RANGE_OPTIONS.find(o => o.days === daysToLookBack) || RANGE_OPTIONS[0];
+        mainBtn.innerHTML = currentOption.btnText;
+        mainBtn.style.pointerEvents = 'auto';
       }
     }
   }
