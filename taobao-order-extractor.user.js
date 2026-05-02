@@ -2,7 +2,7 @@
 // @name         淘宝订单提取器
 // @name:en      Taobao Order Extractor
 // @namespace    https://github.com/sfdye/taobao-order-extractor
-// @version      1.4
+// @version      1.5
 // @description  提取最近淘宝订单信息（支持自定义时间范围：1周/2周/1月），格式化为TSV方便粘贴到腾讯文档/Excel
 // @description:en  Extract recent Taobao orders (customizable range: 1wk/2wk/1mo) as TSV for spreadsheet paste
 // @author       sfdye
