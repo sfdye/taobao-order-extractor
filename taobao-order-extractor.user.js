@@ -407,6 +407,15 @@
       const containerText = container.textContent;
       if (containerText.includes('官方直邮') || containerText.includes('海外运费')) continue;
 
+      let status = '';
+      if (containerText.includes('快件已签收')) {
+        status = '已签收';
+      } else if (containerText.includes('物流派件中')) {
+        status = '派件中';
+      } else {
+        continue;
+      }
+
       const titleEls = container.querySelectorAll('a[class*="title--"] [class*="titleText"]');
       const items = [];
       for (const t of titleEls) {
@@ -418,7 +427,7 @@
       const paid = paidEl ? paidEl.textContent.trim().replace('实付款', '') : '';
 
       if (items.length > 0) {
-        orders.push({ orderId, date: dateStr, items, paid });
+        orders.push({ orderId, date: dateStr, items, paid, status });
       }
     }
 
@@ -461,6 +470,15 @@
 
       if (text.includes('官方直邮') || text.includes('海外运费')) continue;
 
+      let status = '';
+      if (text.includes('快件已签收')) {
+        status = '已签收';
+      } else if (text.includes('物流派件中')) {
+        status = '派件中';
+      } else {
+        continue;
+      }
+
       if (!orderMap[orderId]) {
         const paidMatch = text.match(/实付款￥?([\d.]+)/);
         orderMap[orderId] = {
@@ -468,6 +486,7 @@
           date: dateMatch[1],
           items: [],
           paid: paidMatch ? '￥' + paidMatch[1] : '',
+          status,
           _seenItemIds: new Set(),
         };
       }
@@ -521,6 +540,15 @@
       const tableText = table.textContent;
       if (tableText.includes('官方直邮') || tableText.includes('海外运费')) continue;
 
+      let status = '';
+      if (tableText.includes('快件已签收')) {
+        status = '已签收';
+      } else if (tableText.includes('物流派件中')) {
+        status = '派件中';
+      } else {
+        continue;
+      }
+
       const rows = table.querySelectorAll('tr');
       const items = [];
       let paid = '';
@@ -557,7 +585,7 @@
       }
 
       if (items.length > 0) {
-        orders.push({ orderId, date: dateStr, items, paid });
+        orders.push({ orderId, date: dateStr, items, paid, status });
       }
     }
 
@@ -581,7 +609,7 @@
     const startDate = new Date(today);
     startDate.setDate(startDate.getDate() - daysToLookBack);
     const header = `淘宝订单汇总 (${formatLocalDate(startDate)} ~ ${formatLocalDate(today)})`;
-    const colHeader = ['序号', '商品名称', '实付款', '快递公司', '快递单号'].join('\t');
+    const colHeader = ['序号', '商品名称', '实付款', '快递公司', '快递单号', '状态'].join('\t');
 
     const rows = [];
     let seq = 0;
@@ -589,20 +617,21 @@
       const entries = logisticsMap[order.orderId] || [];
       if (entries.length === 0) continue;
       const items = order.items;
+      const status = order.status || '';
 
       if (items.length === entries.length && items.length > 1) {
         for (let i = 0; i < items.length; i++) {
           seq++;
           const name = simplifyItemName(items[i].name);
           const price = items[i].price || order.paid.replace(/[￥¥]/g, '');
-          rows.push([seq, name, price, entries[i].company, entries[i].trackingNo].join('\t'));
+          rows.push([seq, name, price, entries[i].company, entries[i].trackingNo, status].join('\t'));
         }
       } else {
         for (const entry of entries) {
           seq++;
           const name = items.map(it => simplifyItemName(it.name)).join(' + ');
           const price = order.paid.replace(/[￥¥]/g, '');
-          rows.push([seq, name, price, entry.company, entry.trackingNo].join('\t'));
+          rows.push([seq, name, price, entry.company, entry.trackingNo, status].join('\t'));
         }
       }
     }
