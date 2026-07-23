@@ -2,7 +2,7 @@
 // @name         淘宝订单提取器
 // @name:en      Taobao Order Extractor
 // @namespace    https://github.com/sfdye/taobao-order-extractor
-// @version      1.5
+// @version      1.6
 // @description  提取最近淘宝订单信息（支持自定义时间范围：1周/2周/1月），格式化为TSV方便粘贴到腾讯文档/Excel
 // @description:en  Extract recent Taobao orders (customizable range: 1wk/2wk/1mo) as TSV for spreadsheet paste
 // @author       sfdye
@@ -317,27 +317,35 @@
     });
   }
 
-  // --- Fetch all tracking numbers for an order via mtop list API ---
-  async function fetchLogisticsPackageList(orderId) {
-    const listData = await mtopRequest(
-      'mtop.taobao.logistics.detailorlist.query', '1.0',
-      { orderId, type: 'list', entrance: 'pc' }
-    );
-    const dataObj = listData.data || {};
-    const packages = [];
-    for (const [key, val] of Object.entries(dataObj)) {
-      if (key.startsWith('pakcage_') && val.fields && val.fields.rightBtnUrl) {
-        const urlMatch = val.fields.rightBtnUrl.match(/logisticsOrderId=([^&]+).*mailNo=([^&]+)/);
-        if (urlMatch) {
-          packages.push({ logisticsOrderId: urlMatch[1], mailNo: urlMatch[2] });
-        }
-      }
-    }
-    return packages;
+  // The tracking detail page is the source of truth for delivery. The order
+  // list page can lag behind (e.g. it still shows 卖家已发货 while the package
+  // is already 已签收), so status is taken from the logistics detail API — the
+  // same data the tracking page renders. The authoritative signal is the
+  // package headline (data.package.fields.title, e.g. 已签收 / 派送中 / 运输中);
+  // we scan its text for the delivered / out-for-delivery markers.
+  const DELIVERED_RE = /已签收|本人签收|已妥投|已代收|已投递|快递柜.{0,4}签收|驿站.{0,4}签收|门卫.{0,4}签收/;
+  const OUT_FOR_DELIVERY_RE = /派件中|派送中|正在派送|正在为您派送|派件员/;
+
+  function scanLogisticsStatus(text) {
+    if (!text) return '';
+    if (DELIVERED_RE.test(text)) return '已签收';
+    if (OUT_FOR_DELIVERY_RE.test(text)) return '派件中';
+    return '';
   }
 
-  // --- Fetch company name for a specific package ---
-  async function fetchPackageCompany(orderId, logisticsOrderId, mailNo) {
+  // Read delivery status from a resolved detail payload (mtopRequest already
+  // unwraps to json.data, so dataObj here is the inner `data` object). Prefer
+  // the package headline title; fall back to scanning trace lines.
+  function statusFromDataObj(dataObj) {
+    const headline = dataObj && dataObj.package && dataObj.package.fields
+      ? dataObj.package.fields.title : '';
+    const fromHeadline = scanLogisticsStatus(headline);
+    if (fromHeadline) return fromHeadline;
+    return scanLogisticsStatus(JSON.stringify(dataObj || {}));
+  }
+
+  // --- Fetch company name + delivery status for a specific package ---
+  async function fetchPackageDetail(orderId, logisticsOrderId, mailNo) {
     try {
       const detailData = await mtopRequest(
         'mtop.taobao.logistics.detailorlist.query', '1.0',
@@ -345,14 +353,17 @@
       );
       const detailObj = detailData.data || {};
       const companyField = detailObj.popupBodyCompony;
-      return companyField && companyField.fields ? companyField.fields.name || '' : '';
+      const company = companyField && companyField.fields ? companyField.fields.name || '' : '';
+      const status = statusFromDataObj(detailObj);
+      return { company, status };
     } catch (e) {
-      return '';
+      return { company: '', status: '' };
     }
   }
 
   async function fetchLogistics(orderId) {
-    // Step 1: get single tracking from transit_step.do (fast, no signing)
+    // Fallback tracking source: transit_step.do (fast, no signing). Only used
+    // to fill in company / tracking number if the detail payload lacks them.
     let simpleResult = null;
     try {
       const resp = await fetch(
@@ -369,24 +380,48 @@
       console.warn(`[订单提取] transit_step失败 orderId=${orderId}`, e);
     }
 
-    // Step 2: try mtop list API to discover all packages
+    // The logistics detail query (tracking detail page's data source) drives
+    // delivery status. For single-package orders it returns the package headline
+    // plus company/tracking directly; multi-package orders expose pakcage_* keys.
     try {
-      const packages = await fetchLogisticsPackageList(orderId);
-      if (packages.length <= 1) {
-        return simpleResult ? [simpleResult] : [];
-      }
-      // Multi-package: fetch company name for each
-      const entries = await Promise.all(packages.map(async (pkg) => {
-        if (simpleResult && pkg.mailNo === simpleResult.trackingNo) {
-          return simpleResult;
+      const listData = await mtopRequest(
+        'mtop.taobao.logistics.detailorlist.query', '1.0',
+        { orderId, type: 'list', entrance: 'pc' }
+      );
+      const dataObj = listData.data || {};
+
+      const packages = [];
+      for (const [key, val] of Object.entries(dataObj)) {
+        if (key.startsWith('pakcage_') && val.fields && val.fields.rightBtnUrl) {
+          const urlMatch = val.fields.rightBtnUrl.match(/logisticsOrderId=([^&]+).*mailNo=([^&]+)/);
+          if (urlMatch) {
+            packages.push({ logisticsOrderId: urlMatch[1], mailNo: urlMatch[2] });
+          }
         }
-        const company = await fetchPackageCompany(orderId, pkg.logisticsOrderId, pkg.mailNo);
-        return { company, trackingNo: pkg.mailNo };
-      }));
-      return entries;
+      }
+
+      if (packages.length > 1) {
+        // Multi-package: query each package for its own company + status.
+        return await Promise.all(packages.map(async (pkg) => {
+          const detail = await fetchPackageDetail(orderId, pkg.logisticsOrderId, pkg.mailNo);
+          const isSimple = simpleResult && pkg.mailNo === simpleResult.trackingNo;
+          const company = detail.company || (isSimple ? simpleResult.company : '');
+          return { company, trackingNo: pkg.mailNo, status: detail.status };
+        }));
+      }
+
+      // Single package: status + company + tracking come from this payload.
+      const status = statusFromDataObj(dataObj);
+      const compony = dataObj.popupBodyCompony && dataObj.popupBodyCompony.fields
+        ? dataObj.popupBodyCompony.fields : {};
+      const company = compony.name || (simpleResult ? simpleResult.company : '');
+      const trackingNo = compony.mailNo || (simpleResult ? simpleResult.trackingNo : '');
+      if (!trackingNo && !company && !status) return [];
+      return [{ company, trackingNo, status }];
     } catch (e) {
       console.warn(`[订单提取] mtop物流查询失败 orderId=${orderId}`, e);
-      return simpleResult ? [simpleResult] : [];
+      // Without the detail payload we cannot trust status; emit nothing.
+      return [];
     }
   }
 
@@ -407,15 +442,6 @@
       const containerText = container.textContent;
       if (containerText.includes('官方直邮') || containerText.includes('海外运费')) continue;
 
-      let status = '';
-      if (containerText.includes('快件已签收')) {
-        status = '已签收';
-      } else if (containerText.includes('物流派件中')) {
-        status = '派件中';
-      } else {
-        continue;
-      }
-
       const titleEls = container.querySelectorAll('a[class*="title--"] [class*="titleText"]');
       const items = [];
       for (const t of titleEls) {
@@ -427,7 +453,7 @@
       const paid = paidEl ? paidEl.textContent.trim().replace('实付款', '') : '';
 
       if (items.length > 0) {
-        orders.push({ orderId, date: dateStr, items, paid, status });
+        orders.push({ orderId, date: dateStr, items, paid });
       }
     }
 
@@ -470,15 +496,6 @@
 
       if (text.includes('官方直邮') || text.includes('海外运费')) continue;
 
-      let status = '';
-      if (text.includes('快件已签收')) {
-        status = '已签收';
-      } else if (text.includes('物流派件中')) {
-        status = '派件中';
-      } else {
-        continue;
-      }
-
       if (!orderMap[orderId]) {
         const paidMatch = text.match(/实付款￥?([\d.]+)/);
         orderMap[orderId] = {
@@ -486,7 +503,6 @@
           date: dateMatch[1],
           items: [],
           paid: paidMatch ? '￥' + paidMatch[1] : '',
-          status,
           _seenItemIds: new Set(),
         };
       }
@@ -540,15 +556,6 @@
       const tableText = table.textContent;
       if (tableText.includes('官方直邮') || tableText.includes('海外运费')) continue;
 
-      let status = '';
-      if (tableText.includes('快件已签收')) {
-        status = '已签收';
-      } else if (tableText.includes('物流派件中')) {
-        status = '派件中';
-      } else {
-        continue;
-      }
-
       const rows = table.querySelectorAll('tr');
       const items = [];
       let paid = '';
@@ -585,7 +592,7 @@
       }
 
       if (items.length > 0) {
-        orders.push({ orderId, date: dateStr, items, paid, status });
+        orders.push({ orderId, date: dateStr, items, paid });
       }
     }
 
@@ -614,24 +621,25 @@
     const rows = [];
     let seq = 0;
     for (const order of orders) {
-      const entries = logisticsMap[order.orderId] || [];
+      // Delivery status comes from the logistics detail (source of truth), not
+      // the order list page. Keep only packages that are delivered / in transit.
+      const entries = (logisticsMap[order.orderId] || []).filter(e => e.status);
       if (entries.length === 0) continue;
       const items = order.items;
-      const status = order.status || '';
 
       if (items.length === entries.length && items.length > 1) {
         for (let i = 0; i < items.length; i++) {
           seq++;
           const name = simplifyItemName(items[i].name);
           const price = items[i].price || order.paid.replace(/[￥¥]/g, '');
-          rows.push([seq, name, price, entries[i].company, entries[i].trackingNo, status].join('\t'));
+          rows.push([seq, name, price, entries[i].company, entries[i].trackingNo, entries[i].status].join('\t'));
         }
       } else {
         for (const entry of entries) {
           seq++;
           const name = items.map(it => simplifyItemName(it.name)).join(' + ');
           const price = order.paid.replace(/[￥¥]/g, '');
-          rows.push([seq, name, price, entry.company, entry.trackingNo, status].join('\t'));
+          rows.push([seq, name, price, entry.company, entry.trackingNo, entry.status].join('\t'));
         }
       }
     }
