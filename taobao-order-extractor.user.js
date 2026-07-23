@@ -344,6 +344,14 @@
     return scanLogisticsStatus(JSON.stringify(dataObj || {}));
   }
 
+  // Extract courier name + tracking number from a detail payload. Taobao spells
+  // the key `popupBodyCompony`; its fields hold `name` and `mailNo`.
+  function componyFromDataObj(dataObj) {
+    const fields = dataObj && dataObj.popupBodyCompony && dataObj.popupBodyCompony.fields
+      ? dataObj.popupBodyCompony.fields : {};
+    return { company: fields.name || '', trackingNo: fields.mailNo || '' };
+  }
+
   // --- Fetch company name + delivery status for a specific package ---
   async function fetchPackageDetail(orderId, logisticsOrderId, mailNo) {
     try {
@@ -352,77 +360,79 @@
         { orderId, logisticsOrderId, mailNo, entrance: 'pc' }
       );
       const detailObj = detailData.data || {};
-      const companyField = detailObj.popupBodyCompony;
-      const company = companyField && companyField.fields ? companyField.fields.name || '' : '';
-      const status = statusFromDataObj(detailObj);
-      return { company, status };
+      return {
+        company: componyFromDataObj(detailObj).company,
+        status: statusFromDataObj(detailObj),
+      };
     } catch (e) {
       return { company: '', status: '' };
     }
   }
 
-  async function fetchLogistics(orderId) {
-    // Fallback tracking source: transit_step.do (fast, no signing). Only used
-    // to fill in company / tracking number if the detail payload lacks them.
-    let simpleResult = null;
+  // Fallback tracking source: transit_step.do (fast, no signing). Only used to
+  // fill in company / tracking number if the detail payload lacks them.
+  async function fetchTransitStep(orderId) {
     try {
       const resp = await fetch(
         `//buyertrade.taobao.com/trade/json/transit_step.do?bizOrderId=${orderId}`,
         { credentials: 'include' }
       );
       const buf = await resp.arrayBuffer();
-      const text = new TextDecoder('gbk').decode(buf);
-      const data = JSON.parse(text);
+      const data = JSON.parse(new TextDecoder('gbk').decode(buf));
       if (data.isSuccess === 'true' && data.expressId) {
-        simpleResult = { company: data.expressName || '', trackingNo: data.expressId || '' };
+        return { company: data.expressName || '', trackingNo: data.expressId || '' };
       }
     } catch (e) {
       console.warn(`[订单提取] transit_step失败 orderId=${orderId}`, e);
     }
+    return null;
+  }
 
+  async function fetchLogistics(orderId) {
     // The logistics detail query (tracking detail page's data source) drives
     // delivery status. For single-package orders it returns the package headline
     // plus company/tracking directly; multi-package orders expose pakcage_* keys.
-    try {
-      const listData = await mtopRequest(
-        'mtop.taobao.logistics.detailorlist.query', '1.0',
-        { orderId, type: 'list', entrance: 'pc' }
-      );
-      const dataObj = listData.data || {};
+    // Fire the transit_step fallback in parallel — they're independent.
+    const [simpleResult, listData] = await Promise.all([
+      fetchTransitStep(orderId),
+      mtopRequest('mtop.taobao.logistics.detailorlist.query', '1.0',
+        { orderId, type: 'list', entrance: 'pc' }).catch((e) => {
+        console.warn(`[订单提取] mtop物流查询失败 orderId=${orderId}`, e);
+        return null;
+      }),
+    ]);
 
-      const packages = [];
-      for (const [key, val] of Object.entries(dataObj)) {
-        if (key.startsWith('pakcage_') && val.fields && val.fields.rightBtnUrl) {
-          const urlMatch = val.fields.rightBtnUrl.match(/logisticsOrderId=([^&]+).*mailNo=([^&]+)/);
-          if (urlMatch) {
-            packages.push({ logisticsOrderId: urlMatch[1], mailNo: urlMatch[2] });
-          }
+    // Without the detail payload we cannot trust status; emit nothing.
+    if (!listData) return [];
+
+    const dataObj = listData.data || {};
+
+    const packages = [];
+    for (const [key, val] of Object.entries(dataObj)) {
+      if (key.startsWith('pakcage_') && val.fields && val.fields.rightBtnUrl) {
+        const urlMatch = val.fields.rightBtnUrl.match(/logisticsOrderId=([^&]+).*mailNo=([^&]+)/);
+        if (urlMatch) {
+          packages.push({ logisticsOrderId: urlMatch[1], mailNo: urlMatch[2] });
         }
       }
-
-      if (packages.length > 1) {
-        // Multi-package: query each package for its own company + status.
-        return await Promise.all(packages.map(async (pkg) => {
-          const detail = await fetchPackageDetail(orderId, pkg.logisticsOrderId, pkg.mailNo);
-          const isSimple = simpleResult && pkg.mailNo === simpleResult.trackingNo;
-          const company = detail.company || (isSimple ? simpleResult.company : '');
-          return { company, trackingNo: pkg.mailNo, status: detail.status };
-        }));
-      }
-
-      // Single package: status + company + tracking come from this payload.
-      const status = statusFromDataObj(dataObj);
-      const compony = dataObj.popupBodyCompony && dataObj.popupBodyCompony.fields
-        ? dataObj.popupBodyCompony.fields : {};
-      const company = compony.name || (simpleResult ? simpleResult.company : '');
-      const trackingNo = compony.mailNo || (simpleResult ? simpleResult.trackingNo : '');
-      if (!trackingNo && !company && !status) return [];
-      return [{ company, trackingNo, status }];
-    } catch (e) {
-      console.warn(`[订单提取] mtop物流查询失败 orderId=${orderId}`, e);
-      // Without the detail payload we cannot trust status; emit nothing.
-      return [];
     }
+
+    if (packages.length > 1) {
+      // Multi-package: query each package for its own company + status.
+      return await Promise.all(packages.map(async (pkg) => {
+        const detail = await fetchPackageDetail(orderId, pkg.logisticsOrderId, pkg.mailNo);
+        const isSimple = simpleResult && pkg.mailNo === simpleResult.trackingNo;
+        const company = detail.company || (isSimple ? simpleResult.company : '');
+        return { company, trackingNo: pkg.mailNo, status: detail.status };
+      }));
+    }
+
+    // Single package: status + company + tracking come from this payload.
+    const status = statusFromDataObj(dataObj);
+    const compony = componyFromDataObj(dataObj);
+    const company = compony.company || (simpleResult ? simpleResult.company : '');
+    const trackingNo = compony.trackingNo || (simpleResult ? simpleResult.trackingNo : '');
+    return [{ company, trackingNo, status }];
   }
 
   // --- New version parser ---
