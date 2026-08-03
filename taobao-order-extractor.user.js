@@ -2,7 +2,7 @@
 // @name         淘宝订单提取器
 // @name:en      Taobao Order Extractor
 // @namespace    https://github.com/sfdye/taobao-order-extractor
-// @version      1.6
+// @version      1.7
 // @description  提取最近淘宝订单信息（支持自定义时间范围：1周/2周/1月），格式化为TSV方便粘贴到腾讯文档/Excel
 // @description:en  Extract recent Taobao orders (customizable range: 1wk/2wk/1mo) as TSV for spreadsheet paste
 // @author       sfdye
@@ -26,6 +26,11 @@
     { days: 30, label: '最近 1 月', btnText: '📋 提取近1月订单' },
   ];
   let daysToLookBack = (typeof GM_getValue === 'function') ? GM_getValue('daysToLookBack', 7) : 7;
+
+  // Only track packages shipped to our own address; the recipient name carries
+  // this marker (e.g. "liuyang 168"). Orders addressed elsewhere (gifts,
+  // consolidation warehouses) are skipped. Per-install; override via GM_setValue.
+  const RECIPIENT_MARKER = (typeof GM_getValue === 'function') ? GM_getValue('recipientMarker', '168') : '168';
 
   function formatLocalDate(d) {
     const y = d.getFullYear();
@@ -266,19 +271,28 @@
   }
 
   // --- Mtop API caller via GM_xmlhttpRequest ---
-  function mtopRequest(api, version, data) {
-    return new Promise((resolve, reject) => {
-      const appKey = '12574478';
-      const t = Date.now().toString();
-      const dataStr = JSON.stringify(data);
+  const APP_KEY = '12574478';
+  // Token failures return the SUCCESS-less ret codes below and refresh the
+  // _m_h5_tk cookie on the failed response. This is common on the first call
+  // after page load (before Taobao's JS has seeded the token) or under a burst
+  // of parallel requests, so a single retry with the refreshed token recovers.
+  const TOKEN_FAIL_RE = /TOKEN|ILLEGAL_ACCESS/i;
 
-      const cookieMatch = document.cookie.match(/_m_h5_tk=([^;]+)/);
-      const token = cookieMatch ? cookieMatch[1].split('_')[0] : '';
-      const sign = md5(`${token}&${t}&${appKey}&${dataStr}`);
+  function readH5Token() {
+    const m = document.cookie.match(/_m_h5_tk=([^;]+)/);
+    return m ? m[1].split('_')[0] : '';
+  }
+
+  // One signed attempt; resolves the parsed json regardless of ret code so the
+  // caller can inspect it and decide whether to retry.
+  function mtopRequestOnce(api, version, dataStr, token) {
+    return new Promise((resolve, reject) => {
+      const t = Date.now().toString();
+      const sign = md5(`${token}&${t}&${APP_KEY}&${dataStr}`);
 
       const params = new URLSearchParams({
         jsv: '2.7.0',
-        appKey,
+        appKey: APP_KEY,
         t,
         sign,
         api,
@@ -301,12 +315,7 @@
           headers: { Referer: 'https://market.m.taobao.com/' },
           onload: (resp) => {
             try {
-              const json = JSON.parse(resp.responseText);
-              if (json.ret && json.ret[0] && json.ret[0].startsWith('SUCCESS')) {
-                resolve(json.data);
-              } else {
-                reject(new Error(json.ret ? json.ret[0] : 'unknown error'));
-              }
+              resolve(JSON.parse(resp.responseText));
             } catch (e) { reject(e); }
           },
           onerror: (err) => reject(err),
@@ -314,6 +323,26 @@
       } else {
         reject(new Error('GM_xmlhttpRequest not available'));
       }
+    });
+  }
+
+  // Return json.data on SUCCESS, else throw the ret code.
+  function unwrap(json) {
+    const ret = json && json.ret && json.ret[0] ? json.ret[0] : '';
+    if (ret.startsWith('SUCCESS')) return json.data;
+    throw new Error(ret || 'unknown error');
+  }
+
+  function mtopRequest(api, version, data) {
+    const dataStr = JSON.stringify(data);
+    return mtopRequestOnce(api, version, dataStr, readH5Token()).then((json) => {
+      const ret = json && json.ret && json.ret[0] ? json.ret[0] : '';
+      if (!ret.startsWith('SUCCESS') && TOKEN_FAIL_RE.test(ret)) {
+        // Stale/unseeded token: the failed response refreshed the _m_h5_tk
+        // cookie, so re-sign with it and retry once.
+        return mtopRequestOnce(api, version, dataStr, readH5Token()).then(unwrap);
+      }
+      return unwrap(json);
     });
   }
 
@@ -350,6 +379,13 @@
     const fields = dataObj && dataObj.popupBodyCompony && dataObj.popupBodyCompony.fields
       ? dataObj.popupBodyCompony.fields : {};
     return { company: fields.name || '', trackingNo: fields.mailNo || '' };
+  }
+
+  // Recipient line, e.g. "liuyang 168，138****5818，广东省 广州市 ...". Taobao
+  // spells the key `popupBodyAdress`; the recipient name leads its `title`.
+  function recipientFromDataObj(dataObj) {
+    return dataObj && dataObj.popupBodyAdress && dataObj.popupBodyAdress.fields
+      ? (dataObj.popupBodyAdress.fields.title || '') : '';
   }
 
   // --- Fetch company name + delivery status for a specific package ---
@@ -406,6 +442,7 @@
     if (!listData) return [];
 
     const dataObj = listData.data || {};
+    const recipient = recipientFromDataObj(dataObj);
 
     const packages = [];
     for (const [key, val] of Object.entries(dataObj)) {
@@ -423,7 +460,7 @@
         const detail = await fetchPackageDetail(orderId, pkg.logisticsOrderId, pkg.mailNo);
         const isSimple = simpleResult && pkg.mailNo === simpleResult.trackingNo;
         const company = detail.company || (isSimple ? simpleResult.company : '');
-        return { company, trackingNo: pkg.mailNo, status: detail.status };
+        return { company, trackingNo: pkg.mailNo, status: detail.status, recipient };
       }));
     }
 
@@ -432,7 +469,7 @@
     const compony = componyFromDataObj(dataObj);
     const company = compony.company || (simpleResult ? simpleResult.company : '');
     const trackingNo = compony.trackingNo || (simpleResult ? simpleResult.trackingNo : '');
-    return [{ company, trackingNo, status }];
+    return [{ company, trackingNo, status, recipient }];
   }
 
   // --- New version parser ---
@@ -632,8 +669,10 @@
     let seq = 0;
     for (const order of orders) {
       // Delivery status comes from the logistics detail (source of truth), not
-      // the order list page. Keep only packages that are delivered / in transit.
-      const entries = (logisticsMap[order.orderId] || []).filter(e => e.status);
+      // the order list page. Keep only packages that are delivered / in transit
+      // and addressed to us (recipient name carries the "168" marker).
+      const entries = (logisticsMap[order.orderId] || [])
+        .filter(e => e.status && e.recipient.includes(RECIPIENT_MARKER));
       if (entries.length === 0) continue;
       const items = order.items;
 
