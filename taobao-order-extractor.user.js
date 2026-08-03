@@ -2,7 +2,7 @@
 // @name         淘宝订单提取器
 // @name:en      Taobao Order Extractor
 // @namespace    https://github.com/sfdye/taobao-order-extractor
-// @version      1.7
+// @version      1.8
 // @description  提取最近淘宝订单信息（支持自定义时间范围：1周/2周/1月），格式化为TSV方便粘贴到腾讯文档/Excel
 // @description:en  Extract recent Taobao orders (customizable range: 1wk/2wk/1mo) as TSV for spreadsheet paste
 // @author       sfdye
@@ -580,6 +580,13 @@
     return results;
   }
 
+  // A product-detail link across Taobao and Tmall. Tmall Supermarket (天猫超市)
+  // orders use chaoshi.tmall.com/detail/view_detail.htm and regular Tmall uses
+  // detail.tmall.com — matching only item.taobao.com silently drops those.
+  function isDetailLink(href) {
+    return /item\.taobao\.com|detail\.tmall\.com|tmall\.com\/detail\/view_detail/.test(href);
+  }
+
   // --- Old version parser (table-based) ---
   function parseOldVersion(cutoffStr) {
     const orderTables = document.querySelectorAll('table[class*="bought-wrapper-mod__table"]');
@@ -619,7 +626,9 @@
         for (const a of itemLinks) {
           const href = a.getAttribute('href') || '';
           const text = a.textContent.trim();
-          if (href.includes('item.taobao.com') && text.length > 0) {
+          // Product-detail link: Taobao (item.taobao.com) or Tmall — regular
+          // (detail.tmall.com) and Supermarket/天猫超市 (…/detail/view_detail.htm).
+          if (isDetailLink(href) && text.length > 0) {
             let price = '';
             if (cells.length >= 2) {
               const priceText = cells[1].textContent.trim();
@@ -671,9 +680,17 @@
       // Delivery status comes from the logistics detail (source of truth), not
       // the order list page. Keep only packages that are delivered / in transit
       // and addressed to us (recipient name carries the "168" marker).
-      const entries = (logisticsMap[order.orderId] || [])
-        .filter(e => e.status && e.recipient.includes(RECIPIENT_MARKER));
-      if (entries.length === 0) continue;
+      const raw = logisticsMap[order.orderId] || [];
+      const entries = raw.filter(e => e.status && e.recipient.includes(RECIPIENT_MARKER));
+      if (entries.length === 0) {
+        // Surface why an order was dropped — otherwise a missing token, a
+        // status miss, or a recipient mismatch all look identical (nothing).
+        console.warn(`[订单提取] 跳过订单 ${order.orderId}: ` + (
+          raw.length === 0 ? '物流查询无结果（可能令牌失败）'
+          : raw.map(e => `[status=${e.status || '空'}, recipient=${e.recipient || '空'}]`).join(', ')
+        ));
+        continue;
+      }
       const items = order.items;
 
       if (items.length === entries.length && items.length > 1) {
