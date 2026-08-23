@@ -10,6 +10,7 @@ A Tampermonkey/Greasemonkey userscript that extracts recent Taobao order informa
 ## Features
 
 - Customizable time range (1 week / 2 weeks / 1 month) with persistent selection
+- Optional "include undelivered" toggle to also extract orders that are in transit or not yet shipped
 - Retrieves logistics/tracking information for each order, including multi-package orders
 - Extracts per-item prices
 - Formats output as TSV (tab-separated values) for pasting into Google Sheets, Tencent Docs, Excel, etc.
@@ -36,8 +37,9 @@ Install directly from [Greasy Fork](https://greasyfork.org/en/scripts/576039-%E6
 
 1. Navigate to your [Taobao order list](https://buyertrade.taobao.com/trade/itemlist/list_bought_items.htm)
 2. (Optional) Click the ▼ chevron to select a different time range (1 week, 2 weeks, or 1 month)
-3. Click the "📋 提取本周订单" button to extract
-4. The extracted TSV is copied to your clipboard — paste directly into your spreadsheet
+3. (Optional) In the same dropdown, toggle "包含未送达订单" to include orders that are in transit or not yet shipped
+4. Click the "📋 提取本周订单" button to extract
+5. The extracted TSV is copied to your clipboard — paste directly into your spreadsheet
 
 ## Output Format
 

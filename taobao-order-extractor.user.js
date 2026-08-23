@@ -2,9 +2,9 @@
 // @name         淘宝订单提取器
 // @name:en      Taobao Order Extractor
 // @namespace    https://github.com/sfdye/taobao-order-extractor
-// @version      1.8
-// @description  提取最近淘宝订单信息（支持自定义时间范围：1周/2周/1月），格式化为TSV方便粘贴到腾讯文档/Excel
-// @description:en  Extract recent Taobao orders (customizable range: 1wk/2wk/1mo) as TSV for spreadsheet paste
+// @version      1.9
+// @description  提取最近淘宝订单信息（支持自定义时间范围：1周/2周/1月，可选包含未送达订单），格式化为TSV方便粘贴到腾讯文档/Excel
+// @description:en  Extract recent Taobao orders (customizable range: 1wk/2wk/1mo, optional include undelivered) as TSV for spreadsheet paste
 // @author       sfdye
 // @license      MIT
 // @match        *://buyertrade.taobao.com/trade/itemlist/*
@@ -26,6 +26,7 @@
     { days: 30, label: '最近 1 月', btnText: '📋 提取近1月订单' },
   ];
   let daysToLookBack = (typeof GM_getValue === 'function') ? GM_getValue('daysToLookBack', 7) : 7;
+  let includeUndelivered = (typeof GM_getValue === 'function') ? GM_getValue('includeUndelivered', false) : false;
 
   // Only track packages shipped to our own address; the recipient name carries
   // this marker (e.g. "liuyang 168"). Orders addressed elsewhere (gifts,
@@ -145,6 +146,37 @@
         });
         dropdown.appendChild(item);
       }
+
+      const divider = document.createElement('div');
+      Object.assign(divider.style, {
+        height: '1px',
+        background: '#eee',
+        margin: '4px 0',
+      });
+      dropdown.appendChild(divider);
+
+      const toggleItem = document.createElement('div');
+      toggleItem.textContent = (includeUndelivered ? '✓ ' : '') + '包含未送达订单';
+      Object.assign(toggleItem.style, {
+        padding: '10px 16px',
+        cursor: 'pointer',
+        fontSize: '13px',
+        color: includeUndelivered ? '#ff5000' : '#333',
+        fontWeight: includeUndelivered ? 'bold' : 'normal',
+        background: includeUndelivered ? '#fff5f0' : '#fff',
+        whiteSpace: 'nowrap',
+      });
+      toggleItem.addEventListener('mouseenter', () => { toggleItem.style.background = '#fff5f0'; });
+      toggleItem.addEventListener('mouseleave', () => {
+        toggleItem.style.background = includeUndelivered ? '#fff5f0' : '#fff';
+      });
+      toggleItem.addEventListener('click', (e) => {
+        e.stopPropagation();
+        includeUndelivered = !includeUndelivered;
+        if (typeof GM_setValue === 'function') GM_setValue('includeUndelivered', includeUndelivered);
+        renderDropdown();
+      });
+      dropdown.appendChild(toggleItem);
     }
     renderDropdown();
 
@@ -370,7 +402,10 @@
       ? dataObj.package.fields.title : '';
     const fromHeadline = scanLogisticsStatus(headline);
     if (fromHeadline) return fromHeadline;
-    return scanLogisticsStatus(JSON.stringify(dataObj || {}));
+    const fromBody = scanLogisticsStatus(JSON.stringify(dataObj || {}));
+    if (fromBody) return fromBody;
+    if (includeUndelivered && headline) return headline.trim();
+    return '';
   }
 
   // Extract courier name + tracking number from a detail payload. Taobao spells
@@ -678,18 +713,25 @@
     let seq = 0;
     for (const order of orders) {
       // Delivery status comes from the logistics detail (source of truth), not
-      // the order list page. Keep only packages that are delivered / in transit
-      // and addressed to us (recipient name carries the "168" marker).
+      // the order list page. Keep only packages addressed to us (recipient name
+      // carries the "168" marker). When includeUndelivered is off, also require
+      // a non-empty status (delivered / in transit). When on, keep entries with
+      // any status and also surface orders with no logistics record as 待发货.
       const raw = logisticsMap[order.orderId] || [];
-      const entries = raw.filter(e => e.status && e.recipient.includes(RECIPIENT_MARKER));
+      let entries = raw.filter(e => e.recipient.includes(RECIPIENT_MARKER));
+      if (!includeUndelivered) entries = entries.filter(e => e.status);
       if (entries.length === 0) {
-        // Surface why an order was dropped — otherwise a missing token, a
-        // status miss, or a recipient mismatch all look identical (nothing).
-        console.warn(`[订单提取] 跳过订单 ${order.orderId}: ` + (
-          raw.length === 0 ? '物流查询无结果（可能令牌失败）'
-          : raw.map(e => `[status=${e.status || '空'}, recipient=${e.recipient || '空'}]`).join(', ')
-        ));
-        continue;
+        if (includeUndelivered && raw.length === 0) {
+          entries = [{ company: '', trackingNo: '', status: '待发货', recipient: '' }];
+        } else {
+          // Surface why an order was dropped — otherwise a missing token, a
+          // status miss, or a recipient mismatch all look identical (nothing).
+          console.warn(`[订单提取] 跳过订单 ${order.orderId}: ` + (
+            raw.length === 0 ? '物流查询无结果（可能令牌失败）'
+            : raw.map(e => `[status=${e.status || '空'}, recipient=${e.recipient || '空'}]`).join(', ')
+          ));
+          continue;
+        }
       }
       const items = order.items;
 
