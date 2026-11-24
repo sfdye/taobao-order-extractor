@@ -2,7 +2,7 @@
 // @name         淘宝订单提取器
 // @name:en      Taobao Order Extractor
 // @namespace    https://github.com/sfdye/taobao-order-extractor
-// @version      1.9
+// @version      1.9.2
 // @description  提取最近淘宝订单信息（支持自定义时间范围：1周/2周/1月，可选包含未送达订单），格式化为TSV方便粘贴到腾讯文档/Excel
 // @description:en  Extract recent Taobao orders (customizable range: 1wk/2wk/1mo, optional include undelivered) as TSV for spreadsheet paste
 // @author       sfdye
@@ -318,44 +318,53 @@
   // One signed attempt; resolves the parsed json regardless of ret code so the
   // caller can inspect it and decide whether to retry.
   function mtopRequestOnce(api, version, dataStr, token) {
-    return new Promise((resolve, reject) => {
-      const t = Date.now().toString();
-      const sign = md5(`${token}&${t}&${APP_KEY}&${dataStr}`);
+    const t = Date.now().toString();
+    const sign = md5(`${token}&${t}&${APP_KEY}&${dataStr}`);
 
-      const params = new URLSearchParams({
-        jsv: '2.7.0',
-        appKey: APP_KEY,
-        t,
-        sign,
-        api,
-        v: version,
-        needLogin: 'true',
-        LoginRequest: 'true',
-        type: 'originaljson',
-        dataType: 'json',
-        timeout: '20000',
-        ttid: '#t#ip##_h5_web_default',
-        data: dataStr,
-      });
-
-      const url = `https://h5api.m.taobao.com/h5/${api}/${version}/?${params.toString()}`;
-
-      if (typeof GM_xmlhttpRequest === 'function') {
-        GM_xmlhttpRequest({
-          method: 'GET',
-          url,
-          headers: { Referer: 'https://market.m.taobao.com/' },
-          onload: (resp) => {
-            try {
-              resolve(JSON.parse(resp.responseText));
-            } catch (e) { reject(e); }
-          },
-          onerror: (err) => reject(err),
-        });
-      } else {
-        reject(new Error('GM_xmlhttpRequest not available'));
-      }
+    const params = new URLSearchParams({
+      jsv: '2.7.0',
+      appKey: APP_KEY,
+      t,
+      sign,
+      api,
+      v: version,
+      needLogin: 'true',
+      LoginRequest: 'true',
+      type: 'originaljson',
+      dataType: 'json',
+      timeout: '20000',
+      ttid: '#t#ip##_h5_web_default',
+      data: dataStr,
     });
+
+    const url = `https://h5api.m.taobao.com/h5/${api}/${version}/?${params.toString()}`;
+
+    // Page-context fetch keeps the request same-site, so session cookies
+    // (SameSite=Lax) are attached, and the token-refresh Set-Cookie of a
+    // failed attempt lands in the browser jar for mtopRequest's retry.
+    // GM_xmlhttpRequest runs outside the page's cookie context — session
+    // cookies are not attached and every call fails with no login.
+    const viaFetch = fetch(url, { credentials: 'include' }).then((resp) => {
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      return resp.json();
+    });
+
+    if (typeof GM_xmlhttpRequest !== 'function') return viaFetch;
+
+    // Fall back to GM_xmlhttpRequest only on a page-fetch network failure.
+    return viaFetch.catch(() => new Promise((resolve, reject) => {
+      GM_xmlhttpRequest({
+        method: 'GET',
+        url,
+        headers: { Referer: 'https://market.m.taobao.com/' },
+        onload: (resp) => {
+          try {
+            resolve(JSON.parse(resp.responseText));
+          } catch (e) { reject(e); }
+        },
+        onerror: (err) => reject(err),
+      });
+    }));
   }
 
   // Return json.data on SUCCESS, else throw the ret code.
@@ -434,6 +443,9 @@
       return {
         company: componyFromDataObj(detailObj).company,
         status: statusFromDataObj(detailObj),
+        // The list response for multi-package orders has no popupBodyAdress;
+        // only the per-package detail payload carries the recipient.
+        recipient: recipientFromDataObj(detailObj),
       };
     } catch (e) {
       return { company: '', status: '' };
@@ -491,11 +503,13 @@
 
     if (packages.length > 1) {
       // Multi-package: query each package for its own company + status.
+      // Recipient comes from each package detail (the list response has no
+      // popupBodyAdress for multi-package orders, so it would be '').
       return await Promise.all(packages.map(async (pkg) => {
         const detail = await fetchPackageDetail(orderId, pkg.logisticsOrderId, pkg.mailNo);
         const isSimple = simpleResult && pkg.mailNo === simpleResult.trackingNo;
         const company = detail.company || (isSimple ? simpleResult.company : '');
-        return { company, trackingNo: pkg.mailNo, status: detail.status, recipient };
+        return { company, trackingNo: pkg.mailNo, status: detail.status, recipient: detail.recipient };
       }));
     }
 
@@ -789,7 +803,11 @@
       }
 
       const lineCount = tsv.split('\n').length - 2;
-      showToast(`✅ 已复制 ${lineCount} 个订单到剪贴板`, 4000);
+      if (lineCount === 0) {
+        showToast('未提取到任何订单（订单均被过滤，详情见控制台）', 5000);
+      } else {
+        showToast(`✅ 已复制 ${lineCount} 个订单到剪贴板`, 4000);
+      }
       console.log('[订单提取] 结果:\n' + tsv);
     } catch (e) {
       console.error('[订单提取] 错误:', e);
